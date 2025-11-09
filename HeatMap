@@ -1,0 +1,277 @@
+import pandas as pd
+from dash import Dash, dcc, html, Input, Output
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+
+# Define File Path and Column Names
+# NOTE: Please ensure this file path is valid when running locally.
+FILE_PATH = '/Users/antoinevaladon/Desktop/,/ArizonaPitching25.csv'
+SIDE_FIELD_COLUMN = 'PlateLocSide'
+HEIGHT_FIELD_COLUMN = 'PlateLocHeight'
+DATE_COLUMN = 'Date' 
+FILTER_COLUMN = 'Pitcher' 
+
+# Load Data
+try:
+    # Load with 'low_memory=False' if you have mixed types in columns
+    df = pd.read_csv(FILE_PATH, low_memory=False)
+except FileNotFoundError:
+    print(f"Error: File not found at {FILE_PATH}. Please check the path.")
+    exit()
+
+# --- Date Preprocessing ---
+if DATE_COLUMN in df.columns:
+    df[DATE_COLUMN] = pd.to_datetime(df[DATE_COLUMN], errors='coerce')
+    df.dropna(subset=[DATE_COLUMN], inplace=True)
+    
+    unique_dates = sorted(df[DATE_COLUMN].dt.date.unique())
+    
+    date_map = {date: i for i, date in enumerate(unique_dates)}
+    inverse_date_map = {i: date for i, date in enumerate(unique_dates)}
+    
+    MIN_DATE_INDEX = 0
+    MAX_DATE_INDEX = len(unique_dates) - 1
+else:
+    print(f"Error: Date column '{DATE_COLUMN}' not found in CSV. Date slider disabled.")
+    MIN_DATE_INDEX = 0
+    MAX_DATE_INDEX = 0
+    date_map = {}
+    inverse_date_map = {}
+# ---------------------------
+
+# --- Pitcher Filter Preprocessing ---
+if FILTER_COLUMN in df.columns:
+    df[FILTER_COLUMN] = df[FILTER_COLUMN].fillna('MISSING PITCHER').astype(str)
+else:
+    print(f"Error: Filter column '{FILTER_COLUMN}' not found in CSV.")
+    exit()
+
+unique_filter_values = df[FILTER_COLUMN].unique()
+dropdown_options = [{'label': 'All Pitchers', 'value': 'ALL'}] + \
+                   [{'label': i, 'value': i} for i in unique_filter_values]
+# ------------------------------------
+
+# Setup App and Layout
+app = Dash(__name__)
+
+# --- Helper function to format date marks for the slider ---
+def format_date_marks(date_indices, date_map, step=5):
+    marks = {}
+    if not inverse_date_map:
+        return marks
+        
+    # Only show a subset of marks to keep the slider clean
+    for i, date_index in enumerate(date_indices):
+        # Show marks at every 'step' interval and the very last date
+        if (i % step == 0 and i != 0) or date_index == date_indices[-1] or date_index == date_indices[0]:
+            # Ensure the index exists in the map before accessing
+            if date_index in inverse_date_map:
+                date_obj = inverse_date_map[date_index]
+                marks[date_index] = {'label': date_obj.strftime('%b %d'), 'style': {'color': 'white', 'fontSize': '10px'}}
+            
+    return marks
+# -----------------------------------------------------------
+
+
+app.layout = html.Div([
+    html.H1("Pitcher Plate Density Map", style={'textAlign': 'center'}),
+    
+    html.Div([
+        # Pitcher Dropdown
+        html.Div([
+            html.Label("Select Pitcher:", style={'color': 'white'}),
+            dcc.Dropdown(
+                id='filter-dropdown',
+                options=dropdown_options,
+                value='ALL', 
+                clearable=False,
+                style={'width': '300px', 'color': 'black'}
+            ),
+        ], style={'display': 'inline-block', 'marginRight': '20px'}),
+        
+        # Contour Lines Dropdown
+        html.Div([
+            html.Label("Show Contour Lines:", style={'color': 'white'}),
+            dcc.Dropdown(
+                id='contour-line-dropdown',
+                options=[
+                    {'label': 'Show Lines', 'value': 'show'},
+                    {'label': 'Remove Lines', 'value': 'hide'}
+                ],
+                value='show', 
+                clearable=False,
+                style={'width': '150px', 'color': 'black'}
+            ),
+        ], style={'display': 'inline-block', 'marginRight': '20px'}),
+        
+        # Highlight Peak Checkbox
+        html.Div([
+            html.Label("Highlight Peak Density:", style={'color': 'white'}),
+            dcc.Checklist(
+                id='highlight-peak-checkbox',
+                options=[{'label': ' Yes', 'value': 'HIGHLIGHT'}],
+                value=[], 
+                style={'color': 'white'}
+            ),
+        ], style={'display': 'inline-block'}),
+        
+    ], style={'textAlign': 'center', 'padding': '10px'}),
+    
+    # Date Range Slider
+    html.Div([
+        html.Label("Filter by Date Range:", 
+                   style={'color': 'white', 'textAlign': 'left', 'marginBottom': '10px'}),
+        dcc.RangeSlider(
+            id='date-range-slider',
+            min=MIN_DATE_INDEX,
+            max=MAX_DATE_INDEX,
+            step=1,
+            value=[MIN_DATE_INDEX, MAX_DATE_INDEX], 
+            marks=format_date_marks(range(MIN_DATE_INDEX, MAX_DATE_INDEX + 1), date_map),
+            tooltip={"placement": "bottom", "always_visible": True}
+        ),
+    ], style={'width': '90%', 'margin': '20px auto'}),
+    
+    # --- REMOVED: Contour Density Slider ---
+
+    # Output for Mathematical Spread Factor (Standard Deviation)
+    html.Div(
+        id='math-spread-factor-output',
+        style={
+            'textAlign': 'center', 
+            'fontSize': '1.2em', 
+            'marginTop': '10px', 
+            'padding': '10px',
+            'backgroundColor': '#333',
+            'borderRadius': '5px'
+        }
+    ),
+    
+    dcc.Graph(id='density-map', style={'height': '80vh'})
+], style={'backgroundColor': 'black', 'color': 'white', 'padding': '20px'})
+
+
+@app.callback(
+    # Outputs: Spread Text, Figure
+    Output('math-spread-factor-output', 'children'), 
+    Output('density-map', 'figure'),
+    [Input('filter-dropdown', 'value'),
+     Input('contour-line-dropdown', 'value'),
+     Input('highlight-peak-checkbox', 'value'),
+     Input('date-range-slider', 'value')]
+)
+
+# Update Graph Function after Callback
+def update_graph(selected_pitcher, contour_option, highlight_peak, date_range):
+    """
+    Update the density map, peak highlight, and mathematical spread factor, filtered by date.
+    """
+
+    # 1. Apply Pitcher Filter
+    if selected_pitcher == 'ALL':
+        dff = df.copy()
+    else:
+        dff = df[df[FILTER_COLUMN] == selected_pitcher].copy()
+
+    # 2. Apply Date Filter
+    if inverse_date_map:
+        start_date_index, end_date_index = date_range
+        start_date = inverse_date_map[start_date_index]
+        end_date = inverse_date_map[end_date_index]
+        
+        # Filter the DataFrame based on the selected date range (inclusive)
+        dff = dff[
+            (dff[DATE_COLUMN].dt.date >= start_date) & 
+            (dff[DATE_COLUMN].dt.date <= end_date)
+        ]
+
+
+    # 3. Calculate Mathematical Spread Factor (Standard Deviation)
+    if len(dff) > 1:
+        spread_x = dff[SIDE_FIELD_COLUMN].std()
+        spread_y = dff[HEIGHT_FIELD_COLUMN].std()
+        
+        spread_output_div = html.Span([
+            "Pitch Dispersion (Standard Deviation σ): ",
+            html.B(f"Horizontal (σ): {spread_x:.3f} ft"),
+            " | ",
+            html.B(f"Vertical (σ): {spread_y:.3f} ft")
+        ])
+    else:
+        spread_output_div = f"Not enough pitches to calculate dispersion metrics for the selected range. (Pitches: {len(dff)})"
+
+
+    # 4. Generate Figure
+    line_width = 0 if contour_option == 'hide' else 1 
+
+    x_min, x_max = -2.0, 2.0  
+    y_min, y_max = 0.0, 5.0   
+    sz_top = 3.5
+    sz_bot = 1.5
+    sz_width = 17 / 12 / 2
+
+    fig = go.Figure(go.Histogram2dContour(
+        x=dff[SIDE_FIELD_COLUMN],
+        y=dff[HEIGHT_FIELD_COLUMN],
+        colorscale='Plasma',
+        xaxis='x',
+        yaxis='y',
+        # Fixed number of contours since the slider was removed
+        ncontours=50, 
+        contours_coloring='fill',
+        showscale=False,
+        line=dict(width=line_width, color='gray') 
+    ))
+    
+    # Highlight Peak Density Area (Logic remains the same and is correct)
+    if 'HIGHLIGHT' in highlight_peak and len(dff) > 0:
+        hist, xedges, yedges = np.histogram2d(
+            dff[SIDE_FIELD_COLUMN], 
+            dff[HEIGHT_FIELD_COLUMN], 
+            bins=50, 
+            range=[[x_min, x_max], [y_min, y_max]]
+        )
+        max_idx = np.unravel_index(hist.argmax(), hist.shape)
+        peak_x = (xedges[max_idx[0]] + xedges[max_idx[0]+1]) / 2
+        peak_y = (yedges[max_idx[1]] + yedges[max_idx[1]+1]) / 2
+
+        fig.add_trace(go.Scatter(
+            x=[peak_x], y=[peak_y],
+            mode='markers',
+            marker=dict(
+                color='gold', 
+                size=15, 
+                symbol='star',
+                line=dict(width=2, color='darkred')
+            ),
+            name='Peak Density',
+            showlegend=True
+        ))
+
+    # Strike Zone Box and Home Plate (unchanged)
+    fig.add_shape(
+        type='rect', x0=-sz_width, y0=sz_bot, x1=sz_width, y1=sz_top,
+        line=dict(color="white", width=2, dash="dash"),
+    )
+    fig.add_trace(go.Scatter(
+        x=[-0.5, 0.5], y=[0.1, 0.1], mode='lines', 
+        line=dict(color='white', width=3), showlegend=False
+    ))
+
+    fig.update_layout(
+        plot_bgcolor='black', paper_bgcolor='black', font_color='white',
+        title=f"Pitch Density Map for: {selected_pitcher} ({len(dff)} Pitches)",
+        xaxis_title="Plate Location Side (ft)", yaxis_title="Plate Location Height (ft)",
+        xaxis=dict(range=[x_min, x_max], showgrid=False, zeroline=False),
+        yaxis=dict(range=[y_min, y_max], showgrid=False, zeroline=False),
+        margin=dict(l=40, r=40, t=60, b=40), height=800, showlegend=True
+    )
+
+    # Return the two outputs
+    return spread_output_div, fig 
+
+if __name__ == '__main__':
+    
+    app.run(debug=True)
+    
