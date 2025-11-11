@@ -360,6 +360,8 @@ def update_heatmap(pitcher_name, stat_type, contour_option, highlight_peak, date
     
     # Create figure
     fig = go.Figure()
+    # Cap chase rate 60%
+    zmax_value = 60 if stat_type == 'chase_rate' else 100
     
     # Add heatmap
     fig.add_trace(go.Heatmap(
@@ -368,7 +370,7 @@ def update_heatmap(pitcher_name, stat_type, contour_option, highlight_peak, date
         z=stat_grid_smooth,
         colorscale='Plasma',
         zmin=0,
-        zmax=100,
+        zmax=zmax_value,
         colorbar=dict(
             title=dict(text=f"{stat_name} (%)", font=dict(color='white')),
             tickfont=dict(color='white')
