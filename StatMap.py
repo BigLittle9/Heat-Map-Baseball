@@ -1,4 +1,3 @@
-
 # Authors: Maya Vanderpool and Antoine
 
 import pandas as pd
@@ -74,12 +73,10 @@ radius = 0.3  # feet
 
 # Define statistics
 stats_options = [
-    {'label': 'Whiff Rate %', 'value': 'whiff_rate'},
-    {'label': 'Contact Rate %', 'value': 'contact_rate'},
-    {'label': 'In-Play Rate %', 'value': 'inplay_rate'},
-    {'label': 'Strike Rate %', 'value': 'strike_rate'},
-    {'label': 'Chase Rate %', 'value': 'chase_rate'},
-    {'label': 'Swing Rate %', 'value': 'swing_rate'}
+    {'label': 'Whiff %', 'value': 'whiff_rate'},
+    {'label': 'HardHit %', 'value': 'hardhit_rate'},
+    {'label': 'AVG', 'value': 'avg'},
+    {'label': 'SLG', 'value': 'slg'}
 ]
 
 
@@ -93,59 +90,47 @@ def calculate_whiff_rate(nearby_df):
     whiffs = nearby_df[nearby_df['IsWhiff']]
     return (len(whiffs) / len(swings)) * 100
 
-# Calculate contact rate: contact / swings
-def calculate_contact_rate(nearby_df):
-    swings = nearby_df[nearby_df['IsSwing']]
-    if len(swings) == 0:
-        return 0
-    contact = nearby_df[nearby_df['IsContact']]
-    return (len(contact) / len(swings)) * 100
-
-# Calculate inplay rate: balls in play / swings
-def calculate_inplay_rate(nearby_df):
-    swings = nearby_df[nearby_df['IsSwing']]
-    if len(swings) == 0:
-        return 0
+# Hard hit defined as ExitSpeed >= 95 mph
+def calculate_hardhit_rate(nearby_df):
     inplay = nearby_df[nearby_df['IsInPlay']]
-    return (len(inplay) / len(swings)) * 100
-
-# Calculate strike rate: strikes / all pitches
-def calculate_strike_rate(nearby_df):
-    if len(nearby_df) == 0:
+    if len(inplay) == 0:
         return 0
-    strikes = nearby_df[nearby_df['IsStrike']]
-    return (len(strikes) / len(nearby_df)) * 100
+    hardhit = inplay[inplay['ExitSpeed'] >= 95]
+    return (len(hardhit) / len(inplay)) * 100
 
-# Calculate chase rate: swings outside zone / pitches outside zone
-def calculate_chase_rate(nearby_df):
-    outside_zone = nearby_df[~nearby_df['InZone']]
-    if len(outside_zone) == 0:
+# Calculate batting average: hits / balls in play
+def calculate_avg(nearby_df):
+    inplay = nearby_df[nearby_df['IsInPlay']]
+    if len(inplay) == 0:
         return 0
-    chases = outside_zone[outside_zone['IsSwing']]
-    return (len(chases) / len(outside_zone)) * 100
+    hits = inplay[inplay['PlayResult'].isin(['Single', 'Double', 'Triple', 'HomeRun'])]
+    return len(hits) / len(inplay)
 
-# Calculate swing rate: swings / all pitches
-def calculate_swing_rate(nearby_df):
-    if len(nearby_df) == 0:
+# Calculate slugging percentage: total bases / balls in play
+def calculate_slg(nearby_df):
+    inplay = nearby_df[nearby_df['IsInPlay']]
+    if len(inplay) == 0:
         return 0
-    swings = nearby_df[nearby_df['IsSwing']]
-    return (len(swings) / len(nearby_df)) * 100
+    
+    # Calculate total bases
+    total_bases = 0
+    total_bases += len(inplay[inplay['PlayResult'] == 'Single']) * 1
+    total_bases += len(inplay[inplay['PlayResult'] == 'Double']) * 2
+    total_bases += len(inplay[inplay['PlayResult'] == 'Triple']) * 3
+    total_bases += len(inplay[inplay['PlayResult'] == 'HomeRun']) * 4
+    
+    return total_bases / len(inplay)
 
 # Mapping of stat types to calculation functions
 STAT_FUNCTIONS = {
-    'chase_rate': calculate_chase_rate,
-    'contact_rate': calculate_contact_rate,
-    'inplay_rate': calculate_inplay_rate,
-    'strike_rate': calculate_strike_rate,
-    'swing_rate': calculate_swing_rate,
-    'whiff_rate': calculate_whiff_rate
+   'whiff_rate': calculate_whiff_rate,
+    'hardhit_rate': calculate_hardhit_rate,
+    'avg': calculate_avg,
+    'slg': calculate_slg
 }
-
-# Dash app
 
 # Initialize the Dash app
 app = Dash(__name__)
-
 
 # Calculate the statistic grid for a specific player and statistic
 def calculate_stat_grid(player_df, stat_type):
@@ -226,7 +211,7 @@ app.layout = html.Div([
             dcc.Dropdown(
                 id='stat-dropdown',
                 options=stats_options,
-                value='chase_rate',
+                value='whiff_rate',
                 clearable=False,
                 style={'width': '200px', 'color': 'black'}
             )
@@ -342,12 +327,10 @@ def update_heatmap(pitcher_name, stat_type, contour_option, highlight_peak, date
     
     # Get stat name for title
     stat_names = {
-        'whiff_rate': 'Whiff Rate',
-        'contact_rate': 'Contact Rate',
-        'inplay_rate': 'In-Play Rate',
-        'strike_rate': 'Strike Rate',
-        'chase_rate': 'Chase Rate',
-        'swing_rate': 'Swing Rate'
+        'whiff_rate': 'Whiff %',
+        'hardhit_rate': 'HardHit %',
+        'avg': 'Batting Average',
+        'slg': 'Slugging %'
     }
     stat_name = stat_names.get(stat_type, 'Statistic')
     
@@ -360,9 +343,22 @@ def update_heatmap(pitcher_name, stat_type, contour_option, highlight_peak, date
     
     # Create figure
     fig = go.Figure()
-    # Cap chase rate 60%
-    zmax_value = 60 if stat_type == 'chase_rate' else 100
-    
+   
+
+    # Set appropriate z-axis max based on stat type
+    if stat_type == 'whiff_rate' or stat_type == 'hardhit_rate':
+        zmax_value = 100
+        colorbar_title = f"{stat_name} (%)"
+        hover_format = stat_name + ': %{z:.1f}%'
+    elif stat_type == 'avg':
+        zmax_value = 0.6
+        colorbar_title = stat_name
+        hover_format = stat_name + ': %{z:.3f}'
+    elif stat_type == 'slg':
+        zmax_value = 1.0
+        colorbar_title = stat_name
+        hover_format = stat_name + ': %{z:.3f}'
+   
     # Add heatmap
     fig.add_trace(go.Heatmap(
         x=x_axis,
@@ -372,23 +368,31 @@ def update_heatmap(pitcher_name, stat_type, contour_option, highlight_peak, date
         zmin=0,
         zmax=zmax_value,
         colorbar=dict(
-            title=dict(text=f"{stat_name} (%)", font=dict(color='white')),
+            title=dict(text=colorbar_title, font=dict(color='white')),
             tickfont=dict(color='white')
         ),
         # Allows user to hover over heatmap and see specific data
-        hovertemplate='X: %{x:.2f} ft<br>Y: %{y:.2f} ft<br>' + stat_name + ': %{z:.1f}%<extra></extra>'
+        hovertemplate='X: %{x:.2f} ft<br>Y: %{y:.2f} ft<br>' + hover_format + '<extra></extra>'
     ))
     
     # Add contour lines if enabled
     if contour_option == 'show':
+          # Adjust contour intervals based on stat type
+        if stat_type == 'whiff_rate' or stat_type == 'hardhit_rate':
+            contour_start, contour_end, contour_size = 10, 100, 10
+        elif stat_type == 'avg':
+            contour_start, contour_end, contour_size = 0.05, 0.6, 0.05
+        elif stat_type == 'slg':
+            contour_start, contour_end, contour_size = 0.1, 1.0, 0.1
+       
         fig.add_trace(go.Contour(
             x=x_axis,
             y=y_axis,
             z=stat_grid_smooth,
             contours=dict(
-                start=10,
-                end=100,
-                size=10,
+                start=contour_start,
+                end=contour_end,
+                size=contour_size,
                 showlabels=True,
                 labelfont=dict(size=10, color='white')
             ),
